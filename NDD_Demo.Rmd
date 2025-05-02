@@ -1,0 +1,470 @@
+---
+title: "NDD Demo"
+author: "Turner"
+date: "2024-12-13"
+output: html_document
+---
+
+# Introduction
+In order to follow through the demo, the user must compile the ``NDD_MASTER_Dec3.R" script which may require you to install a few packages first.  Since I have the packages installed in my version, the following code chunk compiles the script.  This will produce some output when running the chunk manually that you can ignore.
+
+```{r echo=T, results='hide'}
+source("NDD_MASTER_FunctionsOnly.R")
+```
+
+# The Tree Frame Object
+A compositional data set can be viewed as simple data frame, but when fitting a Nested Dirichlet Distribution to compositional data, a valid tree must be provided to estimate parameters, provide inference, and compute residual diagnostics.  The tree frame object is a specific data frame that provides the necessary tree information.  For now we will specify our own tree, but when fitting models to data, functions can estimate the tree and thus provide a tree frame object for us.  The following code chunk produces a tree frame for illustration.
+
+
+```{r}
+test<-data.frame(from=c("Root","Root","N1","N1","N2","N2"),to=c("N1","N2","X1","X2","X3","X4"))
+test
+```
+The tree frame object, at a minimum has two columns (from and to).  Each row specifies one edge in the tree indicating what two nodes the edge belongs to.  The from/to terminology just adds a direction to the edges, since its natural to read the tree starting at the root node and moving to nodes nested underneath it.  We can visualize the tree specified in a tree frame using the `plot.treeframe` function.  The plot is located in the viewer window or R studio rather than the plots window.
+
+```{r}
+plot.treeframe(test)
+```
+
+The terminal nodes of the tree will only be specified in the ``to" column of the tree frame object.  In the previous example and figure, we can see that there are 4 terminal nodes denoted as X1,X2,X3, and X4 indicating a four variable compositional data set.
+
+## Random Numbers from a Nested Dirichlet Distribution
+For a given tree frame, we can add an additional column that specified the parameters of the NDD that correspond to each edge in the tree. This colum must be specified as ``alpha".  Upon specifying the parameters, we can simulated random numbers of the NDD. Continuing with our previous tree frame, consider the following code chunk which adds the additional parameter column to the tree frame, simulates a sample of 100 observations and then provide summary statistics.
+
+```{r}
+test$alpha=c(5,5,10,10,1,1)
+test
+#Simulated 100 observations from NDD
+first<-rNDD(100,test)
+head(first)
+#Means
+apply(first,2,mean)
+#Sds
+apply(first,2,sd)
+#Correlation
+cor(first)
+```
+
+It should be noted here that the parameters were chosen such that all four variables have the same mean, however, X1 and X2 have different variances compared to X3 and X4.  Additionally, a positive correlation exists between X1 and X2. 
+
+We can also obtain the theoretical means, standard deviations, and covariance matrix for a given tree frame as long as the alpha parameters are provided using `summary.tree()`.  The function returns a list.
+```{r}
+summary.tree(test)
+
+#obtaining correlation matrix
+print("Correlation:")
+cov2cor(summary.tree(test)$covar)
+```
+
+
+
+## Marginal Densities of the NDD distribution
+The marginal densities are completely determined by the alpha parameters in the corresponding tree frame. In the previous example, the marginal distribution for the variable X1 (as well as X2 in this case), is derived by taking the product of two beta distributions: $B(5,5)$ and $B(10,10)$.  While there is no closed form for these distributions in general, highly accurate saddlepoint approximatios are available. We can use the `saddle.pdf` function in the same way as other density functions in R are utilized to overlay theoretical curves on top of datasets. The inputs of the saddle.cdf are two vectors alpha and beta that represent the alpha and beta parameters of the beta distributions used in the product. The code chunk below does this for the first variable X1, only we do this for a much larger sample size.
+
+```{r}
+first<-rNDD(10000,test)
+hist(first[,1],freq=F,main="",xlab="X1",breaks=50)
+xseq<-seq(.001,.999, length.out=1000)
+lines(xseq,saddle.pdf(xseq,alpha=c(5,10),beta=c(5,10)))  #alpha and beta are length two because we have a simple product of 2 beta distributions in this case.
+```
+When working with many variables, it will be helpful to extract the marginal information across all of the variables that can then be used later.  The following code chunk produces a similar figure as depicted in the tree finding paper and utilizes the `beta.parms` function which extracts the marginal information from a tree frame into a list of parameters that correspond to each variable in the composition.
+
+```{r}
+#Obtaining marginal info for each variable in the NDD specified be the tree frame object  "test"
+margparms<-beta.parms(test)
+
+
+#Making histogram and overlaying theoretical density for each component
+xl<-seq(0.00001,.99999,length.out=1000) #Vector 0 to 1 for plotting
+
+par(mfrow=c(2,2))
+for(i in 1:4){
+  hist(first[,i],freq=F,breaks=50,xlim=c(0,.8),main=colnames(first)[i],xlab="")
+  lines(xl,saddle.pdf(xl,alpha=margparms[[i]]$alpha,beta=margparms[[i]]$beta),col="red",lwd=2)
+}
+par(mfrow=c(1,1))
+
+```
+
+The function `saddle.cdf` takes the same syntax as `saddle.pdf` and computes, as expected, tail probabilities using the Lugannani-Rice approximation described in the supplementary documentation of the paper.
+
+
+## Fitting a NDD model to data
+There are two approaches to estimating the parameters of the NDD.  The first is when the tree is specified in advance and the second is when the tree is not specifieid and the tree itself must be estimated along with the parameters.  The function `NDD.fit` is meant to be the main function to handle the first situation.  The following code chunk produces a random data set from a given NDD, and then estimates the parameters.  The function must have 2 inputs, the compositional data set as well as the tree frame.  For now,  we will run the fit with default options.
+
+### User specified Tree Fitting
+```{r}
+#Simulating the data:
+tree.NDD<-data.frame(from=c("Root","Root","N1","N1","N2","N2"),to=c("X1","N1","X2","N2","X3","X4"))
+plot.treeframe(tree.NDD)
+tree.NDD$alpha=c(2,8,1,3,10,20)
+set.seed(1234)
+first<-rNDD(100,tree.NDD)
+
+
+#Specifying a tree to fit the data and then  estimating parameters
+tree.fixed<-data.frame(from=c("Root","Root","N1","N1","N2","N2"),to=c("X1","N1","X2","N2","X3","X4"))
+mymodel<-NDD.fit(first,tree=tree.fixed,residuals=F,diagnostics=F) # Model with no diagnostic output
+str(mymodel)
+mymodel
+
+```
+
+We can see that `NDD.fit` by default returns a list with two objects.  The first is an updated tree frame called `fit` with the alpha parameters of the tree edges as well as the mean and precision parameters for the branch proportion layers. The second is a scalar value reporting the log-Likelihood value.
+
+There are two additional options inside of `NDD.fit`; `residuals=F` and `diagnostics=F`.  When these are set to true, the fitting function returns the previous parameter estimates and loglikelihood, but also returns additional data frames and vectors in the list. Information for the marginal densities are availables as well as the corresponding residuals (marginally) Additional diagnostics to assess outliers and influential points (jointly) are included as vectors (1 values for each observation).  LD is the likelihood distance and D is the Aitchsion distance from each observation to the estimated mean.  These are turned off by default because they can take quite a bit of time to run for larger data sets.  Computing residuals can be relatively quick, but the diagnostics portion could benefit with some parallel computing implementations.  
+
+Lets first simply run the fit again from our previous example but bump the sample size down to 30.
+```{r}
+tree.NDD<-data.frame(from=c("Root","Root","N1","N1","N2","N2"),to=c("X1","N1","X2","N2","X3","X4"))
+tree.NDD$alpha=c(2,8,1,3,10,20)
+set.seed(1234)
+first<-rNDD(30,tree.NDD)
+
+
+#Specifying a tree to fit the data and then  estimating parameters
+tree.fixed<-data.frame(from=c("Root","Root","N1","N1","N2","N2"),to=c("X1","N1","X2","N2","X3","X4"))
+mymodel<-NDD.fit(first,tree=tree.fixed,residuals=T,diagnostics=T) # Model with diagnostics (This takes about 20 seconds)
+str(mymodel)
+mymodel$resids   #Pseudo residuals from marginal distribution fits
+mymodel$D        #Aitchison distance of each observation to the estimated mean  
+mymodel$LD       #Difference between loglikelihoods with each observation removed
+```
+
+
+With a model fit with all the diagnostics and parameter information available, we can easily create visuals of the diagnostic values for further investigation.  For now, we are going to demonstrate the functionality.  In the example sections, multiple models fits will made  we can compare fits with our diagnostics.
+
+```{r}
+#Plotting joint diagnostics
+par(mfrow=c(1,2))
+plot(mymodel$D,ylab="Aitchison's Distance from Mean",xlab="Observation",type="h")
+plot(mymodel$LD,ylab="Likelihood Displacement",xlab="Observation",type="h")
+par(mfrow=c(1,1))
+
+#Plotting QQ plots of residuals marginally
+#Note it is important to not just run a standard qqplot function here, because the way the pseudo residuals are generated they should follow the standard normal, not just any normal.  So when marginal fits have a reasonable shape but do not capture the variance correctly, this can be overlooked by a standard qqplot call.  The reference line for the qqplot must be the 45 degree line (1-1 correspondence)
+
+ref<-qnorm(ppoints(nrow(first)),0,1)
+
+par(mfrow=c(2,2))
+for(i in 1:ncol(first)){
+  nam<-names(mymodel$resids)
+  qqplot(mymodel$resids[,i],ref,xlab=nam[i],ylab="Theoretical",main="Standard Normal Q-Q")
+  abline(0,1)
+}
+
+
+
+```
+
+As demonstrated previously, with theoretical marginals, we can plot the raw data and marginal densities from the fit using the `marginfo` list provided within `NDD.fit`.  
+```{r}
+#Obtaining marginal infor for each variable in the NDD specified be the tree frame object  "test"
+margparms<-mymodel$parmsmarg
+
+
+#Making histogram and overlaying theoretical density for each component
+xl<-seq(0.00001,.99999,length.out=1000) #Vector 0 to 1 for plotting
+
+par(mfrow=c(2,2))
+for(i in 1:4){
+  hist(first[,i],freq=F,xlim=c(0,.9),main=colnames(first)[i],xlab="")
+  lines(xl,saddle.pdf(xl,alpha=margparms[[i]]$alpha,beta=margparms[[i]]$beta),col="red",lwd=2)
+}
+par(mfrow=c(1,1))
+
+```
+
+In this particular example we can see both in the residual plots as well as the histograms suggest that the marginal fit on X2 may be poor.  This is just do to random sampling. We can verify this with a bigger sample size as demonstrated below.  
+
+```{r}
+set.seed(1234)
+first<-rNDD(2000,tree.NDD)
+
+#Specifying a tree to fit the data and then  estimating parameters
+tree.fixed<-data.frame(from=c("Root","Root","N1","N1","N2","N2"),to=c("X1","N1","X2","N2","X3","X4"))
+mymodel<-NDD.fit(first,tree=tree.fixed,residuals=T,diagnostics=F)
+
+###############################
+#Making graphs
+margparms<-mymodel$parmsmarg
+
+
+#Making histogram and overlaying marginal density estimates from NDD fit
+xl<-seq(0.01,.99,length.out=1000) #Vector 0 to 1 for plotting
+
+par(mfrow=c(2,2))
+for(i in 1:4){
+  hist(first[,i],freq=F,breaks=10,xlim=c(0,.8),main=colnames(first)[i],xlab="")
+  lines(xl,saddle.pdf(xl,alpha=margparms[[i]]$alpha,beta=margparms[[i]]$beta),col="red",lwd=2)
+}
+par(mfrow=c(1,1))
+
+
+```
+
+Note that occasionally NAN warnings are produced during model fitting.  This is a by-product of the numerical routines used by `DirichletReg`.  No NA's are produced in the results of the marginal densities.
+
+
+### Tree Fitting with unknown tree (Tree Finding Algorithm)
+
+If the user does not wish to specify a tree when fitting a NDD, a top-down, greedy search of candidate trees can be performed.  This is implemented with `LDM.alg`.  This function has two inputs. The first is the compositional data set and the second `method=` specifies what criterion is used to determine if an internal node is to be added to the fit.  The options for method are the default MaxLike (maximum likelihood) followed by AIC and BIC. The function returns a treeframe oobject of the best fitting NDD tree and also produces a graph of the tree. Below is an example showing all 3 fits to an example data set.
+
+```{r}
+set.seed(1234)
+test<-data.frame(from=c("Root","Root","N1","N1","N2","N2"),to=c("N1","N2","X1","X2","X3","X4"))
+test$alpha=c(5,5,10,10,1,1)
+#Simulated 40 observations from NDD
+first<-rNDD(40,test)
+head(first)
+cor(first)
+
+LDM.alg(first)
+LDM.alg(first,meth="AIC")  #Favors same tree as Loglikelihood
+LDM.alg(first,meth="BIC")  #BIC more conservative as expected
+
+```
+
+
+If we store the tree finding results in an object, we can then feed the tree frame results into `NDD.fit` to obtain the estimates and examine the fit more closely.
+
+```{r}
+#Storing estimated tree
+tree.est<-LDM.alg(first,meth="AIC")[[2]]
+tree.est
+
+#Estimating NDD with estimated tree
+myfit<-NDD.fit(first,tree.est)
+myfit$fit
+```
+
+
+## Testing between 2 or more groups using a NDD
+The function `LDM.test` implements the methodology described in Turner, McGee, Luedecker (2024) to test if the mean vectors between two or more compositional population are the same. To illustrate its use, we will reproduce the results in their paper. The function takes three inputs. The compositional data, a vector assigning observation to group labels, and the specific tree to use for the NDD model.  Note: This test is only briefly discussed in the tree finding paper and can be skipped by reviewers.
+
+```{r}
+#Verifying with the Watermaze data analysis below
+water.tree<-data.frame(from=c("Root","Root","N1","N1","N2","N2"),to=c("N1","N2","AQ1","OQ","AQ2","TQ"))
+site1 <- "https://raw.githubusercontent.com/xuod/dirichlet/master/example/3Tg.csv"
+site2 <- "https://raw.githubusercontent.com/xuod/dirichlet/master/example/wt.csv"
+Tg3 <- read.csv(site1)
+Wt <- read.csv(site2)
+
+#Scaling to proportions and combining
+Tg3<-Tg3/100
+Wt<-Wt/100
+Full.data<-rbind(Tg3,Wt)
+#Group Variable
+Group<-factor(rep(c("Tg3","Wt"),each=7))
+
+#Ensuring data is a true composition (each row sums to 1)
+Full.data<-DR_data(Full.data)
+
+#Conducting Test
+LDM.test(dataset=Full.data,group=Group,tree=water.tree)
+#Results are identical to manual computations reported in Turner, McGee, Luedecker 2024 Psych Meth paper
+```
+
+
+# Example Analyses for the Tree Finding Paper
+We will use the tree provided in the tree finding main paper to illustrate the basic fitting behavior (comparing Dirichlet versus NDD) and we will highlight the accuracy of the marginals approximations (no residuals or diagnostics).  To do so, this example will be a larger data set. This will also allow for connecting back to previous discussions on how the parameters control aspects of variance and correlation behavior.  For the  Mater Maze data set, we will just analyze them as is.We will utilize this data set to demonstrate outlier detections via Likelihood displacement and Aitchison distances.
+
+
+## Synthetic Data Set
+The following code chunk species the NDD we will work with and the theoretical means, sds, and correlations.
+```{r}
+tree.NDD<-data.frame(from=c("Root","Root","N1","N1","N1","N2","N2"),to=c("N1","N2","X1","X2","X3","X4","X5"))
+tree.NDD$alpha=c(8,2,1/2,3/2,4/2,10,10)
+plot.treeframe(tree.NDD)
+summary.tree(tree.NDD)
+cov2cor(summary.tree(tree.NDD)$covar)
+```
+Why the choice of parameters?  We can verify alot of the key properties of the distribution and discussions/notes in the paper.  $X4$ and $X5$  share the same parent node, $N_1$, and thus if they have the same mean they must have the same variance.   $\Delta(N_2)$ is much larger than 0 indicating $X4$ and $X5$ will be positively correlated and will be negatively correlated with the remaining variables.  $X1$ and $X4$ while having the same mean have different variances since they do not share the same parent node.  $\Delta(N_1)$ is negative indicating that the variables $X1$,$X2$,$X3$ will not be postively correlated but will be "more negatively" correlated than what would be indicated in the standard Dirichlet setting.
+
+
+Generating samples and plotting the data in ternary plots.
+```{r}
+set.seed(12)
+synth<-data.frame(rNDD(1000,tree.NDD))
+plot(acomp(synth),pch=18,cex=.2,axes=T) #Graph looks okay when opened up and viewed in right dimensions
+```
+
+Applying the tree finding algorithm using logLikelihood and obtaining fit plots with marginals.
+```{r}
+#Tree finder
+mysearch<-LDM.alg(synth)
+plot.treeframe(mysearch[[2]])
+
+#Fitting tree selected from search and obtaining parameter estimates
+myfit<-NDD.fit(synth,mysearch[[2]],residuals=T)
+myfit$fit
+
+
+#Plotting raw data with NDD marginal fits overlayed (Ignoring X5  since it has same marginal as X1)
+marg.infoDT<-myfit$parmsmarg
+m <- matrix(c(1,2,3,4,5,5),nrow = 3,ncol = 2,byrow = TRUE)
+layout(mat = m,heights = c(0.45,0.45,0.1))
+xl<-seq(0.00001,.99999,length.out=1000)
+myvars<-c("X1","X2","X3","X4")
+for (i in myvars){
+par(mar = c(2,2,1,1))
+hist(synth[[i]],breaks=25,freq=F,main=i,xlab="",xlim=c(0,.8),ylim=c(0,7))
+lines(xl,saddle.pdf(xl,alpha=marg.infoDT[[i]][,1],beta=marg.infoDT[[i]][,2]),col="black",lwd=3,lty=2)
+}
+#plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+#legend(x = "top",inset = 0,
+#       legend = c("DD", "NDD"), 
+#       col=c("cyan","black"), lwd=3,lty=c(1,2), cex=1.2, horiz = TRUE)
+```
+
+There are a few observations worth noting for this example.  The first is that the tree finding algorithm doesn't nail the exact tree but it "overfits" in the sense that it adds an additional node $N_3$. The fact that the 3 variables $X1,X2,X3$ are on the right hand side of the tree is irrelevant to the distribtuion fit.  However, using notation from the paper $\Delta(N_3)=1.887-(1.489+.49)=-0.092$ which is close to 0 indicating that the addition of the node does not really do much to the fit.  However the other $Delta$ values for $N_1$ and $N_2$ are quite large both from the estimate and the true values.  
+
+The second point is that the choice of parameters in the tree have made it so we can see that while variable $X1$ and $X4$ have the similar mean estimates they do not have the same variance estiamtes (thus marginals are different) and this is captured in the fit as well.   In addition to the marginal plots above we can compare the estimates from the tree fit to the true values to see that they are relatively close (as expected with an $n=1000$).  We can also produce the qqplot of the residuals.
+```{r}
+#Estimates from fit
+summary.tree(myfit$fit)
+cov2cor(summary.tree(myfit$fit)$covar)
+
+#True values
+summary.tree(tree.NDD)
+cov2cor(summary.tree(tree.NDD)$covar)
+```
+
+Residual plots indicate the pseudo residuals follow a standard normal distribution.
+```{r}
+qqdata<-data.frame(Residuals=stack(myfit$resids)[,1],Variable=rep(c("X1","X2","X3","X4","X5"),each=1000))
+
+myplot<-ggplot(qqdata,aes(sample = Residuals))+
+        geom_abline() +
+        stat_qq(size=1) +xlim(-3,3)+ylim(-3,3)
+
+
+myplot + facet_wrap(~Variable)+theme(strip.text.x = element_text(size = 12, colour = "black", angle = 0))+ theme(legend.text=element_text(size=12))
+
+
+```
+
+Note we can demonstrate a poor fit by fitting a standard Dirichlet.
+We can repeat the previous code chunks but just specifying a more simple tree to fit the data to.  The following code chunk produces the fit and generates the marginal and residual plots in one go.  We can see the overall fit using the Dirichlet model is poor when it comes to capturing the marginal behaviour.  Similar story for the correlation behavior.
+```{r}
+tree.DD<-data.frame(from=c("Root","Root","Root","Root","Root"),to=c("X1","X2","X3","X4","X5"))
+myfit2<-NDD.fit(synth,tree.DD,residuals=T)
+
+
+#Marginal fits
+marg.infoDD<-myfit2$parmsmarg
+m <- matrix(c(1,2,3,4,5,5),nrow = 3,ncol = 2,byrow = TRUE)
+layout(mat = m,heights = c(0.45,0.45,0.1))
+xl<-seq(0.00001,.99999,length.out=1000)
+myvars<-c("X1","X3","X4","X5")
+for (i in myvars){
+par(mar = c(2,2,1,1))
+hist(synth[[i]],breaks=25,freq=F,main=i,xlab="",xlim=c(0,.8),ylim=c(0,7))
+lines(xl,saddle.pdf(xl,alpha=marg.infoDD[[i]][,1],beta=marg.infoDD[[i]][,2]),col="black",lwd=3,lty=2)
+}
+
+#Plotting residuals
+qqdata<-data.frame(Residuals=stack(myfit2$resids)[,1],Variable=rep(c("X1","X2","X3","X4","X5"),each=1000))
+
+myplot<-ggplot(qqdata,aes(sample = Residuals))+
+        geom_abline() +
+        stat_qq(size=1) +xlim(-3,3)+ylim(-3,3)
+
+
+myplot + facet_wrap(~Variable)+theme(strip.text.x = element_text(size = 12, colour = "black", angle = 0))+ theme(legend.text=element_text(size=12))
+
+```
+
+
+## Water Maze and Outlier Assesment
+Here we can remind the reader that TML2024 proposed a tree to a fit by making arguemnts using summary statistics and noting the common propoerties of NDD and the choice of tree.  When applying the tree finding algorithm using loglikelihood as the metric for adding internal nodes, we do in fact obtain the same tree as proposed in TML2024 but we now can investigate the fit a little better.
+
+```{r}
+#Generating data
+Tg3 <- read.csv(site1)
+Wt <- read.csv(site2)
+
+#Scaling to proportions and combining
+Tg3<-Tg3/100
+Wt<-Wt/100
+Full.data<-rbind(Tg3,Wt)
+
+#Tree finding
+mysearch<-LDM.alg(Full.data)
+mysearch[[2]]
+#Fitting tree selected from search and obtaining parameter estimates
+myfit<-NDD.fit(Full.data,mysearch[[2]],residuals=T,diagnostics=T)
+
+
+#Plotting raw data with NDD marginal fits overlayed
+marg.infoDT<-myfit$parmsmarg
+m <- matrix(c(1,2,3,4,5,5),nrow = 3,ncol = 2,byrow = TRUE)
+layout(mat = m,heights = c(0.45,0.45,0.1))
+xl<-seq(0.00001,.99999,length.out=1000)
+Full.data<-as.data.frame((Full.data))
+names(Full.data)<-c("TQ","AQ1","OQ","AQ2")
+myvars<-c("TQ","AQ1","OQ","AQ2")
+for (i in myvars){
+par(mar = c(2,2,1,1))
+hist(Full.data[[i]],freq=F,main=i,xlab="",xlim=c(0,.8),ylim=c(0,7))
+lines(xl,saddle.pdf(xl,alpha=marg.infoDT[[i]][,1],beta=marg.infoDT[[i]][,2]),col="black",lwd=3,lty=2)
+}
+```
+
+We can simply state as noted in TML2024, the nesting structure produced in this example only slightly modifies the fit compared to the DD.  AQ1 and OQ variables have roughly the same mean but the variances are different as we can see visually from the marginal fits. (This is somewhat highlighted by the fact that when using AIC or BIC we get the DD from the TF algorithm as well). 
+
+However the inclusion of the nesting structure not only captures the marginal behavior well but also the corrleation structure as seen below.  
+```{r}
+cor(Full.data)
+
+cov2cor(summary.tree(myfit$fit)$covar)[c(1,3,4,2),c(1,3,4,2)]
+```
+
+We can also see this using the estimate along the tree.  $\Delta(N_2)$ is $21.965-8.09$ and thus a large positive value indicating a positive correlation.  $Delta(N_2)$ is also positive but it is not large enough for the estimated correlation to be positive and we do not observe that with sample corrleations either.
+
+```{r}
+myfit$fit
+```
+
+When examining the model diagnostics for the water maze data, we see no major concerns.
+
+```{r}
+par(mfrow=c(1,2))
+plot(myfit$D,ylab="Aitchison's Distance from Mean",xlab="Observation",type="h")
+plot(myfit$LD,ylab="Likelihood Distance",xlab="Observation",type="h")
+par(mfrow=c(1,1))
+
+```
+
+To demonstrate the effectiveness of the dianostics. We added an additional 15th data point to the Water Maze data set at $x=(.005..98..01..005)$ which is predominantly an outlier with respect to AQ1.  We can visually see the outlier in the following ternary plot and the presence of the outlier impacts the sample means and variances but also creates a positive correlation between OQ and AQ2 (it was negative) and creates a negative correlation between AQ1 and OQ.  This suggests that the same tree may still be useful to capture the overall behavior of the new data set, but the outlier will be detected both in terms of its location within the simplex (Aitchison's distance) and in terms of its influence to the parameters fit.
+```{r}
+Full.data.wout<-rbind(Full.data,c(.005,.98,.01,.005))
+
+plot(acomp(Full.data.wout),pch=c(rep(20,14),18),cex=1,col=c(rep("black",14),"red"))
+cor(Full.data.wout)
+cor(Full.data)
+
+apply(Full.data.wout,2,mean)
+apply(Full.data,2,mean)
+
+apply(Full.data.wout,2,sd)
+apply(Full.data,2,sd)
+```
+
+If we use the same tree to fit the 15 data points, the following diagnostics are below and show the 15th observation as having both a high Aitchison distance as well as high Likelihood Distance.
+```{r}
+myfit3<-NDD.fit(Full.data.wout,mysearch[[2]],residuals=T,diagnostics=T)
+
+par(mfrow=c(1,2))
+plot(myfit3$D,ylab="Aitchison's Distance from Mean",xlab="Observation",type="h")
+plot(myfit3$LD,ylab="Likelihood Distance",xlab="Observation",type="h")
+par(mfrow=c(1,1))
+```
+
+
+
+
+
+
+
+
